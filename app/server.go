@@ -38,5 +38,5 @@ func handleRequest(conn net.Conn) {
 	if err != nil {
 		return
 	}
-	conn.Write([]byte("+PONG\r\n"))
+	conn.Write([]byte("+PONGO\r\n"))
 }
