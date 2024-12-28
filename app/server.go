@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 )
 
 // Ensures gofmt doesn't remove the "net" and "os" imports in stage 1 (feel free to remove this!)
@@ -40,6 +41,15 @@ func handleRequest(conn net.Conn) {
 		if err != nil {
 			continue
 		}
-		conn.Write([]byte("+PONG\r\n"))
+		// get the command
+		cmd := strings.Split(string(buf), "\r\n")[2]
+		cmd = strings.ToUpper(cmd)
+		fmt.Println("Received command: ", cmd)
+		switch cmd {
+		case "PING":
+			conn.Write([]byte("+PONG\r\n"))
+		case "ECHO":
+			conn.Write(buf[14:])
+		}
 	}
 }
