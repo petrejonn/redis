@@ -26,6 +26,8 @@ const (
 	Array        byte = '*'
 )
 
+var store = make(map[string]string)
+
 func main() {
 	// You can use print statements as follows for debugging, they'll be visible when running tests.
 	fmt.Println("Logs from your program will appear here!")
@@ -38,6 +40,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer l.Close()
+
 	for {
 		conn, err := l.Accept()
 		if err != nil {
@@ -74,12 +77,24 @@ func handleRequest(conn net.Conn) {
 		case "PING":
 			conn.Write([]byte("+PONG\r\n"))
 		case "ECHO":
+			if array.Count < 2 {
+				conn.Write([]byte("$0\r\n\r\n"))
+				continue
+			}
 			rez := string(resps[1].Data)
 			for i := 2; i < array.Count; i++ {
 				rez = rez + " " + string(resps[i].Data)
 			}
 			rez = fmt.Sprintf("$%d\r\n%s\r\n", len(rez), rez)
 			conn.Write([]byte(rez))
+		case "SET":
+			if array.Count < 3 {
+				conn.Write([]byte("-ERR wrong number of arguments for 'set' command\r\n"))
+				continue
+			}
+			store[string(resps[1].Data)] = string(resps[2].Data)
+			conn.Write([]byte("+OK\r\n"))
+
 		default:
 			conn.Write([]byte("-ERR unknown command\r\n"))
 		}
