@@ -4,12 +4,27 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 )
 
 // Ensures gofmt doesn't remove the "net" and "os" imports in stage 1 (feel free to remove this!)
 var _ = net.Listen
 var _ = os.Exit
+
+type RESP struct {
+	Type  byte
+	Data  []byte
+	Count int
+}
+
+const (
+	SimpleString byte = '+'
+	Error        byte = '-'
+	Integer      byte = ':'
+	BulkString   byte = '$'
+	Array        byte = '*'
+)
 
 func main() {
 	// You can use print statements as follows for debugging, they'll be visible when running tests.
@@ -41,15 +56,58 @@ func handleRequest(conn net.Conn) {
 		if err != nil {
 			continue
 		}
-		// get the command
-		cmd := strings.Split(string(buf), "\r\n")[2]
+		_, array := ParseRESP(buf)
+		if array.Type != Array {
+			conn.Write([]byte("-ERR unknown command\r\n"))
+			continue
+		}
+		resps := make([]RESP, array.Count)
+		data := array.Data
+		for i := 0; i < array.Count; i++ {
+			ln, resp := ParseRESP(data)
+			resps[i] = resp
+			data = data[ln:]
+		}
+		cmd := string(resps[0].Data)
 		cmd = strings.ToUpper(cmd)
-		fmt.Println("Received command: ", cmd)
 		switch cmd {
 		case "PING":
 			conn.Write([]byte("+PONG\r\n"))
 		case "ECHO":
-			conn.Write(buf[14:])
+			rez := string(resps[1].Data)
+			for i := 2; i < array.Count; i++ {
+				rez = rez + " " + string(resps[i].Data)
+			}
+			rez = fmt.Sprintf("$%d\r\n%s\r\n", len(rez), rez)
+			conn.Write([]byte(rez))
+		default:
+			conn.Write([]byte("-ERR unknown command\r\n"))
 		}
 	}
+}
+
+func ParseRESP(buf []byte) (ln int, resp RESP) {
+	if len(buf) == 0 {
+		return 0, RESP{}
+	}
+	resp.Type = buf[0]
+	n := 0
+	for ; n < len(buf); n++ {
+		if buf[n] == '\n' {
+			n++
+			break
+		}
+	}
+	var err error
+	resp.Count, err = strconv.Atoi(string(buf[1 : n-2]))
+	if err != nil {
+		return 0, RESP{}
+	}
+	if resp.Type == Array {
+		resp.Data = buf[n:]
+		return len(buf), resp
+	}
+	resp.Data = buf[n : n+resp.Count]
+	return n + resp.Count + 2, resp
+
 }
