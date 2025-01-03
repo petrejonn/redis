@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Ensures gofmt doesn't remove the "net" and "os" imports in stage 1 (feel free to remove this!)
@@ -26,7 +27,12 @@ const (
 	Array        byte = '*'
 )
 
-var store = make(map[string]string)
+type Value struct {
+	data string
+	exp  int
+}
+
+var store = make(map[string]Value)
 
 func main() {
 	// You can use print statements as follows for debugging, they'll be visible when running tests.
@@ -85,15 +91,50 @@ func handleRequest(conn net.Conn) {
 			for i := 2; i < array.Count; i++ {
 				rez = rez + " " + string(resps[i].Data)
 			}
-			rez = fmt.Sprintf("$%d\r\n%s\r\n", len(rez), rez)
-			conn.Write([]byte(rez))
+			conn.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(rez), rez)))
 		case "SET":
 			if array.Count < 3 {
 				conn.Write([]byte("-ERR wrong number of arguments for 'set' command\r\n"))
 				continue
 			}
-			store[string(resps[1].Data)] = string(resps[2].Data)
+			exp := 0
+			if array.Count > 3 {
+				for i := 4; i <= array.Count; i += 2 {
+					arg := strings.ToUpper(string(resps[i-1].Data))
+					switch arg {
+					case "EX":
+						exp, err = strconv.Atoi(string(resps[i].Data))
+						if err != nil {
+							conn.Write([]byte("-ERR value is not an integer or out of range\r\n"))
+							continue
+						}
+						exp = int(time.Now().Add(time.Duration(exp) * time.Second).Unix())
+					case "PX":
+						exp, err = strconv.Atoi(string(resps[i].Data))
+						if err != nil {
+							conn.Write([]byte("-ERR value is not an integer or out of range\r\n"))
+							continue
+						}
+						exp = int(time.Now().Add(time.Duration(exp) * time.Millisecond).Unix())
+					default:
+						conn.Write([]byte("-ERR syntax error\r\n"))
+					}
+				}
+			}
+			store[string(resps[1].Data)] = Value{string(resps[2].Data), exp}
 			conn.Write([]byte("+OK\r\n"))
+		case "GET":
+			if array.Count < 2 {
+				conn.Write([]byte("-ERR wrong number of arguments for 'get' command\r\n"))
+				continue
+			}
+			val, ok := store[string(resps[1].Data)]
+			fmt.Println(store)
+			if !ok || (val.exp != 0 && val.exp < int(time.Now().Unix())) {
+				conn.Write([]byte("$-1\r\n"))
+				continue
+			}
+			conn.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(val.data), val.data)))
 
 		default:
 			conn.Write([]byte("-ERR unknown command\r\n"))
