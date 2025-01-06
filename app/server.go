@@ -20,11 +20,11 @@ type RESP struct {
 }
 
 const (
-	SimpleString byte = '+'
-	Error        byte = '-'
-	Integer      byte = ':'
-	BulkString   byte = '$'
-	Array        byte = '*'
+	SimpleStringType byte = '+'
+	ErrorType        byte = '-'
+	IntegerType      byte = ':'
+	BulkStringType   byte = '$'
+	ArrayType        byte = '*'
 )
 
 type Value struct {
@@ -66,7 +66,7 @@ func handleRequest(conn net.Conn) {
 			continue
 		}
 		_, array := ParseRESP(buf)
-		if array.Type != Array {
+		if array.Type != ArrayType {
 			conn.Write([]byte("-ERR unknown command\r\n"))
 			continue
 		}
@@ -135,6 +135,19 @@ func handleRequest(conn net.Conn) {
 				continue
 			}
 			conn.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(val.data), val.data)))
+		case "CONFIG":
+			if array.Count < 3 {
+				conn.Write([]byte("-ERR wrong number of arguments for 'config' command\r\n"))
+			}
+			arg := strings.ToLower(string(resps[2].Data))
+			switch arg {
+			case "dir":
+				out := ToRESP(ArrayType, []byte("dir"), []byte("/tmp/redis-files"))
+				conn.Write(out)
+			case "dbfilename":
+				out := ToRESP(ArrayType, []byte("dbfilename"), []byte("dump.rdb"))
+				conn.Write(out)
+			}
 
 		default:
 			conn.Write([]byte("-ERR unknown command\r\n"))
@@ -159,11 +172,25 @@ func ParseRESP(buf []byte) (ln int, resp RESP) {
 	if err != nil {
 		return 0, RESP{}
 	}
-	if resp.Type == Array {
+	if resp.Type == ArrayType {
 		resp.Data = buf[n:]
 		return len(buf), resp
 	}
 	resp.Data = buf[n : n+resp.Count]
 	return n + resp.Count + 2, resp
 
+}
+
+func ToRESP(typ byte, args ...[]byte) []byte {
+	if typ == ArrayType {
+		var out []byte
+		var count int
+		for _, arg := range args {
+			v := []byte(fmt.Sprintf("$%d\r\n%s\r\n", len(arg), arg))
+			out = append(out, v...)
+			count++
+		}
+		return append([]byte(fmt.Sprintf("*%d\r\n", count)), out...)
+	}
+	return []byte("")
 }
