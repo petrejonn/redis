@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/binary"
 	"fmt"
 	"net"
 	"os"
@@ -32,7 +34,43 @@ type Value struct {
 	exp  int
 }
 
+type RDBMetadata struct {
+	Flag  byte
+	Key   []byte
+	Value []byte
+}
+
+type DBRecord struct {
+	ExFlag    []byte // FD(seconds), FC(milliseconds)
+	Ex        []byte
+	ValueType byte
+	Key       []byte // string encoded
+	Value     []byte // string encoded
+}
+
+type DB struct {
+	Flag              byte
+	Index             []byte //size encoded
+	HashTableSizeFlag byte
+	HashTableSize     []byte //size encoded
+	ExpHashTableSize  []byte //sixe encoded
+	Records           []DBRecord
+}
+type RDB struct {
+	// Header section
+	MagicString []byte
+	Version     []byte
+	// Metadata section
+	MetaDatas []RDBMetadata
+	// DB section
+	DBs []DB
+	// End of file section
+	EOFFlag      byte //
+	FileChecksum [8]byte
+}
+
 var store = make(map[string]Value)
+var rdb RDB
 
 func main() {
 	// You can use print statements as follows for debugging, they'll be visible when running tests.
@@ -46,6 +84,8 @@ func main() {
 		os.Exit(1)
 	}
 	defer l.Close()
+
+	initDB()
 
 	for {
 		conn, err := l.Accept()
@@ -88,40 +128,68 @@ func handleRequest(conn net.Conn) {
 				continue
 			}
 			rez := string(resps[1].Data)
-			for i := 2; i < array.Count; i++ {
-				rez = rez + " " + string(resps[i].Data)
-			}
 			conn.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(rez), rez)))
 		case "SET":
 			if array.Count < 3 {
 				conn.Write([]byte("-ERR wrong number of arguments for 'set' command\r\n"))
 				continue
 			}
-			exp := 0
 			if array.Count > 3 {
 				for i := 4; i <= array.Count; i += 2 {
 					arg := strings.ToUpper(string(resps[i-1].Data))
 					switch arg {
 					case "EX":
-						exp, err = strconv.Atoi(string(resps[i].Data))
+						// TODO: increase hashtable count
+						exp64, err := strconv.ParseUint(string(resps[i].Data), 10, 32)
+						exp := uint32(exp64)
 						if err != nil {
 							conn.Write([]byte("-ERR value is not an integer or out of range\r\n"))
 							continue
 						}
-						exp = int(time.Now().Add(time.Duration(exp) * time.Second).Unix())
+						exp = uint32(time.Now().Add(time.Duration(exp) * time.Second).Unix())
+						expBytes := make([]byte, 4)
+						binary.LittleEndian.PutUint32(expBytes, exp)
+						key := append([]byte{byte(len(resps[1].Data))}, resps[1].Data...)
+						value := append([]byte{byte(len(resps[2].Data))}, resps[2].Data...)
+						rdb.DBs[0].Records = append(rdb.DBs[0].Records, DBRecord{
+							ExFlag:    []byte{0xFD},
+							Ex:        expBytes,
+							ValueType: byte(0x00),
+							Key:       key,
+							Value:     value,
+						})
 					case "PX":
-						exp, err = strconv.Atoi(string(resps[i].Data))
+						// TODO: increase hashtable count
+						exp, err := strconv.ParseUint(string(resps[i].Data), 10, 64)
 						if err != nil {
 							conn.Write([]byte("-ERR value is not an integer or out of range\r\n"))
 							continue
 						}
-						exp = int(time.Now().Add(time.Duration(exp) * time.Millisecond).Unix())
+						exp = uint64(time.Now().Add(time.Duration(exp) * time.Millisecond).Unix())
+						expBytes := make([]byte, 8)
+						binary.LittleEndian.PutUint64(expBytes, exp)
+						key := append([]byte{byte(len(resps[1].Data))}, resps[1].Data...)
+						value := append([]byte{byte(len(resps[2].Data))}, resps[2].Data...)
+						rdb.DBs[0].Records = append(rdb.DBs[0].Records, DBRecord{
+							ExFlag:    []byte{0xFC},
+							Ex:        expBytes,
+							ValueType: byte(0x00),
+							Key:       key,
+							Value:     value,
+						})
 					default:
 						conn.Write([]byte("-ERR syntax error\r\n"))
 					}
 				}
+			} else {
+				key := append([]byte{byte(len(resps[1].Data))}, resps[1].Data...)
+				value := append([]byte{byte(len(resps[2].Data))}, resps[2].Data...)
+				rdb.DBs[0].Records = append(rdb.DBs[0].Records, DBRecord{
+					ValueType: byte(0x00),
+					Key:       key,
+					Value:     value,
+				})
 			}
-			store[string(resps[1].Data)] = Value{string(resps[2].Data), exp}
 			conn.Write([]byte("+OK\r\n"))
 		case "GET":
 			if array.Count < 2 {
@@ -148,6 +216,9 @@ func handleRequest(conn net.Conn) {
 				out := ToRESP(ArrayType, []byte("dbfilename"), []byte("dump.rdb"))
 				conn.Write(out)
 			}
+		case "SAVE":
+			rdb.save()
+			conn.Write([]byte("+OK\r\n"))
 
 		default:
 			conn.Write([]byte("-ERR unknown command\r\n"))
@@ -193,4 +264,60 @@ func ToRESP(typ byte, args ...[]byte) []byte {
 		return append([]byte(fmt.Sprintf("*%d\r\n", count)), out...)
 	}
 	return []byte("")
+}
+
+func initDB() {
+	rdb = RDB{
+		MagicString: []byte{0x52, 0x45, 0x44, 0x49, 0x53},
+		Version:     []byte{0x30, 0x30, 0x31, 0x31},
+		MetaDatas: []RDBMetadata{
+			{
+				Flag:  byte(0xFA),
+				Key:   []byte{0x09, 0x72, 0x65, 0x64, 0x69, 0x73, 0x2D, 0x76, 0x65, 0x72},
+				Value: []byte{0x06, 0x36, 0x2E, 0x30, 0x2E, 0x31, 0x36},
+			},
+		},
+		DBs: []DB{
+			{
+				Flag:              byte(0xFE),
+				Index:             []byte{0x00},
+				HashTableSizeFlag: byte(0xFB),
+				HashTableSize:     []byte{0x00},
+				ExpHashTableSize:  []byte{0x00},
+			},
+		},
+	}
+}
+
+func (r RDB) save() {
+	file, err := os.Create("db.rdb")
+	if err != nil {
+		fmt.Printf("Error creating DB file")
+	}
+	defer file.Close()
+	buffer := new(bytes.Buffer)
+	buffer.Write(r.MagicString)
+	buffer.Write(r.Version)
+	// Metadata section
+	for _, metaData := range r.MetaDatas {
+		buffer.WriteByte(metaData.Flag)
+		buffer.Write(metaData.Key)
+		buffer.Write(metaData.Value)
+	}
+	// DB section
+	for _, db := range r.DBs {
+		buffer.WriteByte(db.Flag)
+		buffer.Write(db.Index)
+		buffer.WriteByte(db.HashTableSizeFlag)
+		buffer.Write(db.HashTableSize)
+		buffer.Write(db.ExpHashTableSize)
+		for _, record := range db.Records {
+			buffer.Write(record.ExFlag)
+			buffer.Write(record.Ex)
+			buffer.WriteByte(record.ValueType)
+			buffer.Write(record.Key)
+			buffer.Write(record.Value)
+		}
+	}
+	file.Write(buffer.Bytes())
 }
