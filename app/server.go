@@ -54,7 +54,7 @@ type DB struct {
 	HashTableSizeFlag byte
 	HashTableSize     []byte //size encoded
 	ExpHashTableSize  []byte //sixe encoded
-	Records           []DBRecord
+	Records           map[string]DBRecord
 }
 type RDB struct {
 	// Header section
@@ -151,13 +151,13 @@ func handleRequest(conn net.Conn) {
 						binary.LittleEndian.PutUint32(expBytes, exp)
 						key := append([]byte{byte(len(resps[1].Data))}, resps[1].Data...)
 						value := append([]byte{byte(len(resps[2].Data))}, resps[2].Data...)
-						rdb.DBs[0].Records = append(rdb.DBs[0].Records, DBRecord{
+						rdb.DBs[0].Records[string(resps[1].Data)] = DBRecord{
 							ExFlag:    []byte{0xFD},
 							Ex:        expBytes,
 							ValueType: byte(0x00),
 							Key:       key,
 							Value:     value,
-						})
+						}
 					case "PX":
 						// TODO: increase hashtable count
 						exp, err := strconv.ParseUint(string(resps[i].Data), 10, 64)
@@ -170,13 +170,13 @@ func handleRequest(conn net.Conn) {
 						binary.LittleEndian.PutUint64(expBytes, exp)
 						key := append([]byte{byte(len(resps[1].Data))}, resps[1].Data...)
 						value := append([]byte{byte(len(resps[2].Data))}, resps[2].Data...)
-						rdb.DBs[0].Records = append(rdb.DBs[0].Records, DBRecord{
+						rdb.DBs[0].Records[string(resps[1].Data)] = DBRecord{
 							ExFlag:    []byte{0xFC},
 							Ex:        expBytes,
 							ValueType: byte(0x00),
 							Key:       key,
 							Value:     value,
-						})
+						}
 					default:
 						conn.Write([]byte("-ERR syntax error\r\n"))
 					}
@@ -184,11 +184,11 @@ func handleRequest(conn net.Conn) {
 			} else {
 				key := append([]byte{byte(len(resps[1].Data))}, resps[1].Data...)
 				value := append([]byte{byte(len(resps[2].Data))}, resps[2].Data...)
-				rdb.DBs[0].Records = append(rdb.DBs[0].Records, DBRecord{
+				rdb.DBs[0].Records[string(resps[1].Data)] = DBRecord{
 					ValueType: byte(0x00),
 					Key:       key,
 					Value:     value,
-				})
+				}
 			}
 			conn.Write([]byte("+OK\r\n"))
 		case "GET":
@@ -284,6 +284,7 @@ func initDB() {
 				HashTableSizeFlag: byte(0xFB),
 				HashTableSize:     []byte{0x00},
 				ExpHashTableSize:  []byte{0x00},
+				Records:           map[string]DBRecord{},
 			},
 		},
 	}
