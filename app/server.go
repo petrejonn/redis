@@ -220,6 +220,17 @@ func handleRequest(conn net.Conn) {
 		case "SAVE":
 			rdb.save()
 			conn.Write([]byte("+OK\r\n"))
+		case "KEY":
+			var values [][]byte
+			if string(resps[1].Data) == "*" {
+				values = make([][]byte, 0, len(rdb.DBs[0].Records))
+				fmt.Println(values)
+				for _, v := range rdb.DBs[0].Records {
+					values = append(values, v.Key[1:])
+				}
+			}
+			out := ToRESP(ArrayType, values...)
+			conn.Write(out)
 
 		default:
 			conn.Write([]byte("-ERR unknown command\r\n"))
