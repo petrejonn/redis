@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"hash/crc64"
 	"net"
 	"os"
 	"strconv"
@@ -28,11 +29,6 @@ const (
 	BulkStringType   byte = '$'
 	ArrayType        byte = '*'
 )
-
-type Value struct {
-	data string
-	exp  int
-}
 
 type RDBMetadata struct {
 	Flag  byte
@@ -69,7 +65,6 @@ type RDB struct {
 	FileChecksum [8]byte
 }
 
-var store = make(map[string]Value)
 var rdb RDB
 
 func main() {
@@ -196,13 +191,19 @@ func handleRequest(conn net.Conn) {
 				conn.Write([]byte("-ERR wrong number of arguments for 'get' command\r\n"))
 				continue
 			}
-			val, ok := store[string(resps[1].Data)]
-			fmt.Println(store)
-			if !ok || (val.exp != 0 && val.exp < int(time.Now().Unix())) {
+			rec, ok := rdb.DBs[0].Records[string(resps[1].Data)]
+			if !ok {
 				conn.Write([]byte("$-1\r\n"))
 				continue
 			}
-			conn.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(val.data), val.data)))
+			if len(rec.ExFlag) > 0 {
+				expiration := int64(binary.LittleEndian.Uint64(rec.Ex))
+				if expiration < time.Now().Unix() {
+					conn.Write([]byte("$-1\r\n"))
+					continue
+				}
+			}
+			conn.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", int(rec.Value[0]), string(rec.Value[1:]))))
 		case "CONFIG":
 			if array.Count < 3 {
 				conn.Write([]byte("-ERR wrong number of arguments for 'config' command\r\n"))
@@ -267,27 +268,134 @@ func ToRESP(typ byte, args ...[]byte) []byte {
 }
 
 func initDB() {
-	rdb = RDB{
-		MagicString: []byte{0x52, 0x45, 0x44, 0x49, 0x53},
-		Version:     []byte{0x30, 0x30, 0x31, 0x31},
-		MetaDatas: []RDBMetadata{
-			{
-				Flag:  byte(0xFA),
-				Key:   []byte{0x09, 0x72, 0x65, 0x64, 0x69, 0x73, 0x2D, 0x76, 0x65, 0x72},
-				Value: []byte{0x06, 0x36, 0x2E, 0x30, 0x2E, 0x31, 0x36},
+	var ok bool
+	rdb, ok = initDBFromFile()
+	if !ok {
+		rdb = RDB{
+			MagicString: []byte{0x52, 0x45, 0x44, 0x49, 0x53},
+			Version:     []byte{0x30, 0x30, 0x31, 0x31},
+			MetaDatas: []RDBMetadata{
+				{
+					Flag:  byte(0xFA),
+					Key:   []byte{0x09, 0x72, 0x65, 0x64, 0x69, 0x73, 0x2D, 0x76, 0x65, 0x72},
+					Value: []byte{0x06, 0x36, 0x2E, 0x30, 0x2E, 0x31, 0x36},
+				},
 			},
-		},
-		DBs: []DB{
-			{
-				Flag:              byte(0xFE),
-				Index:             []byte{0x00},
-				HashTableSizeFlag: byte(0xFB),
-				HashTableSize:     []byte{0x00},
-				ExpHashTableSize:  []byte{0x00},
-				Records:           map[string]DBRecord{},
+			DBs: []DB{
+				{
+					Flag:              byte(0xFE),
+					Index:             []byte{0x00},
+					HashTableSizeFlag: byte(0xFB),
+					HashTableSize:     []byte{0x00},
+					ExpHashTableSize:  []byte{0x00},
+					Records:           map[string]DBRecord{},
+				},
 			},
-		},
+		}
 	}
+}
+
+func initDBFromFile() (rdb RDB, ok bool) {
+	//read dump.rdb file
+	// if file exist parse and return db
+	file, err := os.Open("dump.rdb")
+	if err != nil {
+		fmt.Println("Error opening file:", err)
+		return RDB{}, false
+	}
+	defer file.Close()
+	fileInfo, _ := file.Stat()
+	data := make([]byte, fileInfo.Size())
+	_, err = file.Read(data)
+	if err != nil {
+		fmt.Println("Error reading file:", err)
+		return RDB{}, false
+	}
+	buffer := bytes.NewBuffer(data)
+	magicString := string(buffer.Next(5))
+	if magicString != "REDIS" {
+		fmt.Println("Invalid REDIS db file")
+		return RDB{}, false
+	}
+	rdb.MagicString = []byte{0x52, 0x45, 0x44, 0x49, 0x53}
+	rdb.Version = buffer.Next(4)
+	opCode, err := buffer.ReadByte()
+	// read metadatas
+	for err == nil && opCode == byte(0xFA) {
+		keyLen, _ := buffer.ReadByte()
+		key := buffer.Next(int(keyLen))
+		valLen, _ := buffer.ReadByte()
+		var decValLen int
+		switch valLen {
+		case 0xC0:
+			decValLen = 1
+		case 0xC1:
+			decValLen = 2
+		case 0xC2:
+			decValLen = 4
+		default:
+			decValLen = int(valLen)
+		}
+		val := buffer.Next(int(decValLen))
+		rdb.MetaDatas = append(rdb.MetaDatas, RDBMetadata{
+			Flag:  byte(0xFA),
+			Key:   append([]byte{keyLen}, key...),
+			Value: append([]byte{valLen}, val...),
+		})
+		opCode, err = buffer.ReadByte()
+	}
+	// read dbs
+	for err == nil && opCode == byte(0xFE) {
+		db := DB{
+			Flag:    byte(0xFE),
+			Index:   buffer.Next(1),
+			Records: map[string]DBRecord{},
+		}
+		if buffer.Next(1)[0] == 0xFB {
+			db.HashTableSizeFlag = byte(0xFB)
+			db.HashTableSize = buffer.Next(1)
+			db.ExpHashTableSize = buffer.Next(1)
+		}
+		// read records
+		opCode, _ = buffer.ReadByte()
+		for opCode != 0xFF && opCode != 0xFE {
+			record := DBRecord{}
+			if opCode == 0xFC {
+				record.ExFlag = []byte{opCode}
+				record.Ex = buffer.Next(8)
+				opCode, err = buffer.ReadByte()
+			}
+			if opCode == 0xFD {
+				record.ExFlag = []byte{opCode}
+				record.Ex = buffer.Next(4)
+				opCode, err = buffer.ReadByte()
+			}
+			record.ValueType = opCode
+			// read keylen and key
+			keyLen, _ := buffer.ReadByte()
+			key := buffer.Next(int(keyLen))
+			record.Key = append([]byte{keyLen}, key...)
+			valLen, _ := buffer.ReadByte()
+			var decValLen int
+			switch valLen {
+			case 0xC0:
+				decValLen = 1
+			case 0xC1:
+				decValLen = 2
+			case 0xC2:
+				decValLen = 4
+			default:
+				decValLen = int(valLen)
+			}
+			val := buffer.Next(int(decValLen))
+			record.Value = append([]byte{valLen}, val...)
+			db.Records[string(key)] = record
+			opCode, err = buffer.ReadByte()
+		}
+
+		rdb.DBs = append(rdb.DBs, db)
+	}
+	return rdb, true
 }
 
 func (r RDB) save() {
@@ -296,6 +404,7 @@ func (r RDB) save() {
 		fmt.Printf("Error creating DB file")
 	}
 	defer file.Close()
+	// Header section
 	buffer := new(bytes.Buffer)
 	buffer.Write(r.MagicString)
 	buffer.Write(r.Version)
@@ -320,5 +429,15 @@ func (r RDB) save() {
 			buffer.Write(record.Value)
 		}
 	}
+	buffer.WriteByte(0xFF)
+
+	hashTable := crc64.MakeTable(crc64.ISO)
+	checksum := crc64.Checksum(buffer.Bytes(), hashTable)
+
+	checksumBytes := make([]byte, 8)
+	binary.LittleEndian.PutUint64(checksumBytes, checksum)
+	buffer.Write(checksumBytes)
+
 	file.Write(buffer.Bytes())
+	fmt.Printf("Computed checksum: %016x\n", checksum)
 }
