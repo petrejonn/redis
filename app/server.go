@@ -142,6 +142,7 @@ func handleRequest(conn net.Conn) {
 							continue
 						}
 						exp = uint32(time.Now().Add(time.Duration(exp) * time.Second).Unix())
+						fmt.Println(exp)
 						expBytes := make([]byte, 4)
 						binary.LittleEndian.PutUint32(expBytes, exp)
 						key := append([]byte{byte(len(resps[1].Data))}, resps[1].Data...)
@@ -160,7 +161,7 @@ func handleRequest(conn net.Conn) {
 							conn.Write([]byte("-ERR value is not an integer or out of range\r\n"))
 							continue
 						}
-						exp = uint64(time.Now().Add(time.Duration(exp) * time.Millisecond).Unix())
+						exp = uint64(time.Now().Add(time.Duration(exp) * time.Millisecond).UnixMilli())
 						expBytes := make([]byte, 8)
 						binary.LittleEndian.PutUint64(expBytes, exp)
 						key := append([]byte{byte(len(resps[1].Data))}, resps[1].Data...)
@@ -197,8 +198,17 @@ func handleRequest(conn net.Conn) {
 				continue
 			}
 			if len(rec.ExFlag) > 0 {
-				expiration := int64(binary.LittleEndian.Uint64(rec.Ex))
-				if expiration < time.Now().Unix() {
+				var expired bool
+				if rec.ExFlag[0] == 0xFD {
+					expiration := int64(binary.LittleEndian.Uint32(rec.Ex))
+					expired = expiration < time.Now().Unix()
+
+				}
+				if rec.ExFlag[0] == 0xFC {
+					expiration := int64(binary.LittleEndian.Uint64(rec.Ex))
+					expired = expiration < time.Now().UnixMilli()
+				}
+				if expired {
 					conn.Write([]byte("$-1\r\n"))
 					continue
 				}
@@ -224,7 +234,6 @@ func handleRequest(conn net.Conn) {
 			var values [][]byte
 			if string(resps[1].Data) == "*" {
 				values = make([][]byte, 0, len(rdb.DBs[0].Records))
-				fmt.Println(values)
 				for _, v := range rdb.DBs[0].Records {
 					values = append(values, v.Key[1:])
 				}
@@ -307,8 +316,6 @@ func initDB() {
 }
 
 func initDBFromFile() (rdb RDB, ok bool) {
-	//read dump.rdb file
-	// if file exist parse and return db
 	file, err := os.Open("dump.rdb")
 	if err != nil {
 		fmt.Println("Error opening file:", err)
