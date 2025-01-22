@@ -68,12 +68,16 @@ type RDB struct {
 var rdb RDB
 
 func main() {
+	port := "6379"
+	if len(os.Args) > 2 && os.Args[1] == "--port" {
+		port = os.Args[2]
+	}
 	// You can use print statements as follows for debugging, they'll be visible when running tests.
-	fmt.Println("Logs from your program will appear here!")
+	fmt.Printf("Starting redis on port %s!\n", port)
 
 	// Uncomment this block to pass the first stage
 
-	l, err := net.Listen("tcp", "0.0.0.0:6379")
+	l, err := net.Listen("tcp", "0.0.0.0:"+port)
 	if err != nil {
 		fmt.Println("Failed to bind to port 6379")
 		os.Exit(1)
