@@ -66,16 +66,23 @@ type RDB struct {
 }
 
 var rdb RDB
+var role string
 
 func main() {
 	port := "6379"
-	if len(os.Args) > 2 && (os.Args[1] == "--port" || os.Args[1] == "-p") {
-		port = os.Args[2]
+	role = "master"
+
+	for i := 1; i < len(os.Args)-1; i += 2 {
+		switch os.Args[i] {
+		case "--port", "-p":
+			port = os.Args[i+1]
+		case "--replicaof":
+			role = "slave"
+		}
 	}
+
 	// You can use print statements as follows for debugging, they'll be visible when running tests.
 	fmt.Printf("Starting redis on port %s!\n", port)
-
-	// Uncomment this block to pass the first stage
 
 	l, err := net.Listen("tcp", "0.0.0.0:"+port)
 	if err != nil {
@@ -249,7 +256,7 @@ func handleRequest(conn net.Conn) {
 			if arg == "replication" {
 				out := ToRESP(BulkStringType,
 					[]byte("# Replication\n"),
-					[]byte("role:master\n"),
+					[]byte(fmt.Sprintf("role:%s\n", role)),
 					[]byte("connected_slaves:0\n"),
 					[]byte("master_replid:8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb\n"),
 					[]byte("master_repl_offset:0\n"),
@@ -310,7 +317,6 @@ func ToRESP(typ byte, args ...[]byte) []byte {
 		for _, arg := range args {
 			out = append(out, arg...)
 		}
-		fmt.Printf("$%d\r\n%s\r\n", len(out), string(out))
 		return []byte(fmt.Sprintf("$%d\r\n%s\r\n", len(out), string(out)))
 	}
 	return []byte("")
