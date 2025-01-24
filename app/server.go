@@ -64,32 +64,52 @@ type RDB struct {
 	EOFFlag      byte //
 	FileChecksum [8]byte
 }
+type Server struct {
+	port       string
+	role       string
+	masterIP   string
+	masterPort string
+	masterConn net.Conn
+}
 
 var rdb RDB
-var role string
+var sv Server
 
 func main() {
-	port := "6379"
-	role = "master"
+	sv.port = "6379"
+	sv.role = "master"
 
 	for i := 1; i < len(os.Args)-1; i += 2 {
 		switch os.Args[i] {
 		case "--port", "-p":
-			port = os.Args[i+1]
+			sv.port = os.Args[i+1]
 		case "--replicaof":
-			role = "slave"
+			sv.role = "slave"
+			masterInfo := strings.Split(os.Args[i+1], " ")
+			if len(masterInfo) == 2 {
+				sv.masterIP = masterInfo[0]
+				sv.masterPort = masterInfo[1]
+			} else {
+				fmt.Println("Invalid --replicaof argument. Expected format: host:port")
+				os.Exit(1)
+			}
 		}
 	}
 
 	// You can use print statements as follows for debugging, they'll be visible when running tests.
-	fmt.Printf("Starting redis on port %s!\n", port)
+	fmt.Printf("Starting redis on port %s!\n", sv.port)
 
-	l, err := net.Listen("tcp", "0.0.0.0:"+port)
+	l, err := net.Listen("tcp", "0.0.0.0:"+sv.port)
 	if err != nil {
 		fmt.Println("Failed to bind to port 6379")
 		os.Exit(1)
 	}
 	defer l.Close()
+
+	if sv.role == "slave" {
+		handShake()
+		defer sv.masterConn.Close()
+	}
 
 	initDB()
 
@@ -256,7 +276,7 @@ func handleRequest(conn net.Conn) {
 			if arg == "replication" {
 				out := ToRESP(BulkStringType,
 					[]byte("# Replication\n"),
-					[]byte(fmt.Sprintf("role:%s\n", role)),
+					[]byte(fmt.Sprintf("role:%s\n", sv.role)),
 					[]byte("connected_slaves:0\n"),
 					[]byte("master_replid:8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb\n"),
 					[]byte("master_repl_offset:0\n"),
@@ -493,4 +513,22 @@ func (r RDB) save() {
 
 	file.Write(buffer.Bytes())
 	fmt.Printf("Computed checksum: %016x\n", checksum)
+}
+
+func handShake() {
+	var err error
+	sv.masterConn, err = net.Dial("tcp", fmt.Sprintf("%s:%s", sv.masterIP, sv.masterPort))
+	if err != nil {
+		fmt.Printf("Failed to connect to %s:%s\n", sv.masterIP, sv.masterPort)
+		os.Exit(1)
+	}
+	sv.masterConn.Write([]byte("*1\r\n$4\r\nPING\r\n"))
+	response := make([]byte, 8)
+	n, err := sv.masterConn.Read(response)
+	if err != nil {
+		fmt.Println("Error reading response:", err)
+		return
+	}
+
+	fmt.Println(string(response[:n]))
 }
