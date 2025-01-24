@@ -290,6 +290,8 @@ func handleRequest(conn net.Conn) {
 			}
 		case "REPLCONF":
 			conn.Write([]byte("+OK\r\n"))
+		case "PSYNC":
+			conn.Write([]byte("+FULLRESYNC <REPL_ID> 0\r\n"))
 		default:
 			conn.Write([]byte("-ERR unknown command\r\n"))
 		}
@@ -526,15 +528,16 @@ func handShake() {
 	handshakeCmds := [][]byte{[]byte("*1\r\n$4\r\nPING\r\n"),
 		[]byte(fmt.Sprintf("*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n$4\r\n%s\r\n", sv.masterPort)),
 		[]byte("*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n"),
+		[]byte("*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n"),
 	}
 	for _, cmd := range handshakeCmds {
 		sv.masterConn.Write(cmd)
-		response := make([]byte, 8)
+		response := make([]byte, 512)
 		n, err := sv.masterConn.Read(response)
 		if err != nil {
 			fmt.Println("Error reading response:", err)
 			return
 		}
-		fmt.Println(string(response[:n]))
+		fmt.Print(string(response[:n]))
 	}
 }
