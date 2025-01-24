@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash/crc64"
+	"math/rand"
 	"net"
 	"os"
 	"strconv"
@@ -15,6 +16,8 @@ import (
 // Ensures gofmt doesn't remove the "net" and "os" imports in stage 1 (feel free to remove this!)
 var _ = net.Listen
 var _ = os.Exit
+
+const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 type RESP struct {
 	Type  byte
@@ -70,6 +73,7 @@ type Server struct {
 	masterIP   string
 	masterPort string
 	masterConn net.Conn
+	replId     string
 }
 
 var rdb RDB
@@ -78,6 +82,7 @@ var sv Server
 func main() {
 	sv.port = "6379"
 	sv.role = "master"
+	sv.replId = randomString(40)
 
 	for i := 1; i < len(os.Args)-1; i += 2 {
 		switch os.Args[i] {
@@ -121,6 +126,18 @@ func main() {
 		}
 		go handleRequest(conn)
 	}
+}
+
+func init() {
+	rand.Seed(time.Now().UnixNano())
+}
+
+func randomString(length int) string {
+	b := make([]byte, length)
+	for i := range b {
+		b[i] = charset[rand.Intn(len(charset))]
+	}
+	return string(b)
 }
 
 func handleRequest(conn net.Conn) {
@@ -278,7 +295,7 @@ func handleRequest(conn net.Conn) {
 					[]byte("# Replication\n"),
 					[]byte(fmt.Sprintf("role:%s\n", sv.role)),
 					[]byte("connected_slaves:0\n"),
-					[]byte("master_replid:8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb\n"),
+					[]byte(fmt.Sprintf("master_replid:%s\n", sv.replId)),
 					[]byte("master_repl_offset:0\n"),
 					[]byte("second_repl_offset:-1\n"),
 					[]byte("repl_backlog_active:0\n"),
@@ -291,7 +308,7 @@ func handleRequest(conn net.Conn) {
 		case "REPLCONF":
 			conn.Write([]byte("+OK\r\n"))
 		case "PSYNC":
-			conn.Write([]byte("+FULLRESYNC <REPL_ID> 0\r\n"))
+			conn.Write([]byte(fmt.Sprintf("+FULLRESYNC %s 0\r\n", sv.replId)))
 		default:
 			conn.Write([]byte("-ERR unknown command\r\n"))
 		}
