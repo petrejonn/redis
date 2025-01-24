@@ -69,7 +69,7 @@ var rdb RDB
 
 func main() {
 	port := "6379"
-	if len(os.Args) > 2 && os.Args[1] == "--port" {
+	if len(os.Args) > 2 && (os.Args[1] == "--port" || os.Args[1] == "-p") {
 		port = os.Args[2]
 	}
 	// You can use print statements as follows for debugging, they'll be visible when running tests.
@@ -244,6 +244,23 @@ func handleRequest(conn net.Conn) {
 			}
 			out := ToRESP(ArrayType, values...)
 			conn.Write(out)
+		case "INFO":
+			arg := string(resps[1].Data)
+			if arg == "replication" {
+				out := ToRESP(BulkStringType,
+					[]byte("# Replication\n"),
+					[]byte("role:master\n"),
+					[]byte("connected_slaves:0\n"),
+					[]byte("master_replid:8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb\n"),
+					[]byte("master_repl_offset:0\n"),
+					[]byte("second_repl_offset:-1\n"),
+					[]byte("repl_backlog_active:0\n"),
+					[]byte("repl_backlog_size:1048576\n"),
+					[]byte("repl_backlog_first_byte_offset:0\n"),
+					[]byte("repl_backlog_histlen:\n"),
+				)
+				conn.Write(out)
+			}
 
 		default:
 			conn.Write([]byte("-ERR unknown command\r\n"))
@@ -287,6 +304,14 @@ func ToRESP(typ byte, args ...[]byte) []byte {
 			count++
 		}
 		return append([]byte(fmt.Sprintf("*%d\r\n", count)), out...)
+	}
+	if typ == BulkStringType {
+		var out []byte
+		for _, arg := range args {
+			out = append(out, arg...)
+		}
+		fmt.Printf("$%d\r\n%s\r\n", len(out), string(out))
+		return []byte(fmt.Sprintf("$%d\r\n%s\r\n", len(out), string(out)))
 	}
 	return []byte("")
 }
