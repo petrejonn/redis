@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash/crc64"
+	"io"
 	"math/rand"
 	"net"
 	"os"
@@ -309,6 +310,18 @@ func handleRequest(conn net.Conn) {
 			conn.Write([]byte("+OK\r\n"))
 		case "PSYNC":
 			conn.Write([]byte(fmt.Sprintf("+FULLRESYNC %s 0\r\n", sv.replId)))
+			file, err := os.Open("dump.rdb")
+			if err != nil {
+				conn.Write([]byte("-ERR unknown command\r\n"))
+			}
+			fileInfo, _ := file.Stat()
+			data := make([]byte, fileInfo.Size())
+			_, err = file.Read(data)
+			if err != nil {
+				conn.Write([]byte("-ERR unknown command\r\n"))
+			}
+			conn.Write([]byte(fmt.Sprintf("$%d\r\n%s", len(data), data)))
+			file.Close()
 		default:
 			conn.Write([]byte("-ERR unknown command\r\n"))
 		}
@@ -549,12 +562,27 @@ func handShake() {
 	}
 	for _, cmd := range handshakeCmds {
 		sv.masterConn.Write(cmd)
-		response := make([]byte, 512)
-		n, err := sv.masterConn.Read(response)
-		if err != nil {
-			fmt.Println("Error reading response:", err)
-			return
-		}
-		fmt.Print(string(response[:n]))
+		response := readVariableResponse(sv.masterConn)
+		fmt.Print(string(response))
 	}
+	response := readVariableResponse(sv.masterConn)
+	fmt.Print(string(response))
+}
+
+func readVariableResponse(conn net.Conn) (response []byte) {
+	buf := make([]byte, 1024)
+	for {
+		n, err := conn.Read(buf)
+		if err != nil {
+			if err != io.EOF {
+				fmt.Println("Error reading response:", err)
+			}
+			break
+		}
+		response = append(response, buf[:n]...)
+		if n < len(buf) {
+			break
+		}
+	}
+	return response
 }
