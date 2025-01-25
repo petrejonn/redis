@@ -75,6 +75,7 @@ type Server struct {
 	masterPort string
 	masterConn net.Conn
 	replId     string
+	repls      []net.Conn
 }
 
 var rdb RDB
@@ -113,12 +114,12 @@ func main() {
 	defer l.Close()
 
 	if sv.role == "slave" {
-		handShake()
+		data := handShake()
+		initDB(data[4:])
 		defer sv.masterConn.Close()
+	} else {
+		initDB(nil)
 	}
-
-	initDB()
-
 	for {
 		conn, err := l.Accept()
 		if err != nil {
@@ -127,10 +128,6 @@ func main() {
 		}
 		go handleRequest(conn)
 	}
-}
-
-func init() {
-	rand.Seed(time.Now().UnixNano())
 }
 
 func randomString(length int) string {
@@ -235,6 +232,11 @@ func handleRequest(conn net.Conn) {
 					Value:     value,
 				}
 			}
+			for _, repl := range sv.repls {
+				fmt.Println("Sending to replica")
+				repl.Write(buf)
+			}
+			fmt.Println(string(buf))
 			conn.Write([]byte("+OK\r\n"))
 		case "GET":
 			if array.Count < 2 {
@@ -320,8 +322,11 @@ func handleRequest(conn net.Conn) {
 			if err != nil {
 				conn.Write([]byte("-ERR unknown command\r\n"))
 			}
-			conn.Write([]byte(fmt.Sprintf("$%d\r\n%s", len(data), data)))
+			r := append([]byte("$"), byte(len(data)))
+			r = append(r, []byte(fmt.Sprintf("\r\n%s", data))...)
+			conn.Write(r)
 			file.Close()
+			sv.repls = append(sv.repls, conn)
 		default:
 			conn.Write([]byte("-ERR unknown command\r\n"))
 		}
@@ -375,9 +380,12 @@ func ToRESP(typ byte, args ...[]byte) []byte {
 	return []byte("")
 }
 
-func initDB() {
-	var ok bool
-	rdb, ok = initDBFromFile()
+func initDB(data []byte) {
+	if data != nil {
+		parseDB(data)
+		return
+	}
+	ok := initDBFromFile()
 	if !ok {
 		rdb = RDB{
 			MagicString: []byte{0x52, 0x45, 0x44, 0x49, 0x53},
@@ -403,11 +411,11 @@ func initDB() {
 	}
 }
 
-func initDBFromFile() (rdb RDB, ok bool) {
+func initDBFromFile() bool {
 	file, err := os.Open("dump.rdb")
 	if err != nil {
 		fmt.Println("Error opening file:", err)
-		return RDB{}, false
+		return false
 	}
 	defer file.Close()
 	fileInfo, _ := file.Stat()
@@ -415,13 +423,17 @@ func initDBFromFile() (rdb RDB, ok bool) {
 	_, err = file.Read(data)
 	if err != nil {
 		fmt.Println("Error reading file:", err)
-		return RDB{}, false
+		return false
 	}
+	return parseDB(data)
+}
+
+func parseDB(data []byte) bool {
 	buffer := bytes.NewBuffer(data)
 	magicString := string(buffer.Next(5))
 	if magicString != "REDIS" {
 		fmt.Println("Invalid REDIS db file")
-		return RDB{}, false
+		return false
 	}
 	rdb.MagicString = []byte{0x52, 0x45, 0x44, 0x49, 0x53}
 	rdb.Version = buffer.Next(4)
@@ -501,9 +513,8 @@ func initDBFromFile() (rdb RDB, ok bool) {
 
 		rdb.DBs = append(rdb.DBs, db)
 	}
-	return rdb, true
+	return true
 }
-
 func (r RDB) save() {
 	file, err := os.Create("db.rdb")
 	if err != nil {
@@ -548,7 +559,7 @@ func (r RDB) save() {
 	fmt.Printf("Computed checksum: %016x\n", checksum)
 }
 
-func handShake() {
+func handShake() []byte {
 	var err error
 	sv.masterConn, err = net.Dial("tcp", fmt.Sprintf("%s:%s", sv.masterIP, sv.masterPort))
 	if err != nil {
@@ -565,8 +576,8 @@ func handShake() {
 		response := readVariableResponse(sv.masterConn)
 		fmt.Print(string(response))
 	}
-	response := readVariableResponse(sv.masterConn)
-	fmt.Print(string(response))
+	return readVariableResponse(sv.masterConn)
+
 }
 
 func readVariableResponse(conn net.Conn) (response []byte) {
