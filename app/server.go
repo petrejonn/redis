@@ -116,7 +116,8 @@ func main() {
 	if sv.role == "slave" {
 		data := handShake()
 		initDB(data[4:])
-		defer sv.masterConn.Close()
+		go handleRequest(sv.masterConn)
+		// defer sv.masterConn.Close()
 	} else {
 		initDB(nil)
 	}
