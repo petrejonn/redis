@@ -116,8 +116,7 @@ func main() {
 	if sv.role == "slave" {
 		data := handShake()
 		initDB(data[4:])
-		go handleRequest(sv.masterConn)
-		// defer sv.masterConn.Close()
+		go handleRequest(sv.masterConn, false)
 	} else {
 		initDB(nil)
 	}
@@ -127,7 +126,7 @@ func main() {
 			fmt.Println("Error accepting connection: ", err.Error())
 			os.Exit(1)
 		}
-		go handleRequest(conn)
+		go handleRequest(conn, true)
 	}
 }
 
@@ -139,7 +138,7 @@ func randomString(length int) string {
 	return string(b)
 }
 
-func handleRequest(conn net.Conn) {
+func handleRequest(conn net.Conn, respond bool) {
 	defer conn.Close()
 	for {
 		buf := make([]byte, 1024)
@@ -221,7 +220,9 @@ func handleRequest(conn net.Conn) {
 							Value:     value,
 						}
 					default:
-						conn.Write([]byte("-ERR syntax error\r\n"))
+						if respond {
+							conn.Write([]byte("-ERR syntax error\r\n"))
+						}
 					}
 				}
 			} else {
@@ -237,8 +238,9 @@ func handleRequest(conn net.Conn) {
 				fmt.Println("Sending to replica")
 				repl.Write(buf)
 			}
-			fmt.Println(string(buf))
-			conn.Write([]byte("+OK\r\n"))
+			if respond {
+				conn.Write([]byte("+OK\r\n"))
+			}
 		case "GET":
 			if array.Count < 2 {
 				conn.Write([]byte("-ERR wrong number of arguments for 'get' command\r\n"))
