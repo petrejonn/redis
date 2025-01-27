@@ -312,7 +312,16 @@ func handleRequest(conn net.Conn, respond bool) {
 				conn.Write(out)
 			}
 		case "REPLCONF":
-			conn.Write([]byte("+OK\r\n"))
+			switch strings.ToUpper(string(resps[1].Data)) {
+			case "GETACK":
+				if len(resps) == 3 && string(resps[2].Data) == "*" {
+					conn.Write([]byte("*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n"))
+				} else {
+					conn.Write([]byte("-ERR unknown command\r\n"))
+				}
+			default:
+				conn.Write([]byte("+OK\r\n"))
+			}
 		case "PSYNC":
 			conn.Write([]byte(fmt.Sprintf("+FULLRESYNC %s 0\r\n", sv.replId)))
 			file, err := os.Open("dump.rdb")
