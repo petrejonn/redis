@@ -76,6 +76,7 @@ type Server struct {
 	masterConn net.Conn
 	replId     string
 	repls      []net.Conn
+	offset     int
 }
 
 var rdb RDB
@@ -142,7 +143,7 @@ func handleRequest(conn net.Conn, respond bool) {
 	defer conn.Close()
 	for {
 		buf := make([]byte, 1024)
-		_, err := conn.Read(buf)
+		n, err := conn.Read(buf)
 		if err != nil {
 			continue
 		}
@@ -162,7 +163,11 @@ func handleRequest(conn net.Conn, respond bool) {
 		cmd = strings.ToUpper(cmd)
 		switch cmd {
 		case "PING":
-			conn.Write([]byte("+PONG\r\n"))
+			if respond {
+				conn.Write([]byte("+PONG\r\n"))
+				continue
+			}
+			sv.offset += len(buf[:n])
 		case "ECHO":
 			if array.Count < 2 {
 				conn.Write([]byte("$0\r\n\r\n"))
@@ -236,11 +241,13 @@ func handleRequest(conn net.Conn, respond bool) {
 			}
 			for _, repl := range sv.repls {
 				fmt.Println("Sending to replica")
-				repl.Write(buf)
+				repl.Write(buf[:n])
 			}
-			if respond {
-				conn.Write([]byte("+OK\r\n"))
+			if !respond {
+				fmt.Println(len(buf[:n]))
+				sv.offset += len(buf[:n])
 			}
+			conn.Write([]byte("+OK\r\n"))
 		case "GET":
 			if array.Count < 2 {
 				conn.Write([]byte("-ERR wrong number of arguments for 'get' command\r\n"))
@@ -315,13 +322,14 @@ func handleRequest(conn net.Conn, respond bool) {
 			switch strings.ToUpper(string(resps[1].Data)) {
 			case "GETACK":
 				if len(resps) == 3 && string(resps[2].Data) == "*" {
-					conn.Write([]byte("*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n"))
+					conn.Write([]byte(fmt.Sprintf("*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$%d\r\n%d\r\n", len(strconv.Itoa(sv.offset)), sv.offset)))
 				} else {
 					conn.Write([]byte("-ERR unknown command\r\n"))
 				}
 			default:
 				conn.Write([]byte("+OK\r\n"))
 			}
+			sv.offset += len(buf[:n])
 		case "PSYNC":
 			conn.Write([]byte(fmt.Sprintf("+FULLRESYNC %s 0\r\n", sv.replId)))
 			file, err := os.Open("dump.rdb")
@@ -339,6 +347,8 @@ func handleRequest(conn net.Conn, respond bool) {
 			conn.Write(r)
 			file.Close()
 			sv.repls = append(sv.repls, conn)
+		case "WAIT":
+			conn.Write([]byte(fmt.Sprintf(":%d\r\n", len(sv.repls))))
 		default:
 			conn.Write([]byte("-ERR unknown command\r\n"))
 		}
