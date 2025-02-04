@@ -75,8 +75,13 @@ type Server struct {
 	masterPort string
 	masterConn net.Conn
 	replId     string
-	repls      []net.Conn
+	repls      map[string]Replica
 	offset     int
+	acks       int
+}
+type Replica struct {
+	conn   net.Conn
+	offset int
 }
 
 var rdb RDB
@@ -86,6 +91,7 @@ func main() {
 	sv.port = "6379"
 	sv.role = "master"
 	sv.replId = randomString(40)
+	sv.repls = make(map[string]Replica)
 
 	for i := 1; i < len(os.Args)-1; i += 2 {
 		switch os.Args[i] {
@@ -144,12 +150,12 @@ func handleRequest(conn net.Conn, respond bool) {
 	for {
 		buf := make([]byte, 1024)
 		n, err := conn.Read(buf)
-		if err != nil {
+		if err != nil || n <= 0 {
 			continue
 		}
 		_, array := ParseRESP(buf)
-		if array.Type != ArrayType {
-			conn.Write([]byte("-ERR unknown command\r\n"))
+		if array.Type != ArrayType || array.Count <= 0 {
+			// conn.Write([]byte("-ERR unknown command\r\n"))
 			continue
 		}
 		resps := make([]RESP, array.Count)
@@ -241,7 +247,8 @@ func handleRequest(conn net.Conn, respond bool) {
 			}
 			for _, repl := range sv.repls {
 				fmt.Println("Sending to replica")
-				repl.Write(buf[:n])
+				repl.conn.Write(buf[:n])
+				repl.offset += len(buf[:n])
 			}
 			if !respond {
 				fmt.Println(len(buf[:n]))
@@ -323,13 +330,19 @@ func handleRequest(conn net.Conn, respond bool) {
 			case "GETACK":
 				if len(resps) == 3 && string(resps[2].Data) == "*" {
 					conn.Write([]byte(fmt.Sprintf("*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$%d\r\n%d\r\n", len(strconv.Itoa(sv.offset)), sv.offset)))
+					sv.offset += len(buf[:n])
 				} else {
 					conn.Write([]byte("-ERR unknown command\r\n"))
+				}
+			case "ACK":
+				ackOffset, _ := strconv.Atoi(string(resps[2].Data))
+				fmt.Println(ackOffset, sv.repls[conn.RemoteAddr().String()].offset, conn.RemoteAddr().String())
+				if sv.repls[conn.RemoteAddr().String()].offset-37 == ackOffset {
+					sv.acks++
 				}
 			default:
 				conn.Write([]byte("+OK\r\n"))
 			}
-			sv.offset += len(buf[:n])
 		case "PSYNC":
 			conn.Write([]byte(fmt.Sprintf("+FULLRESYNC %s 0\r\n", sv.replId)))
 			file, err := os.Open("dump.rdb")
@@ -346,9 +359,28 @@ func handleRequest(conn net.Conn, respond bool) {
 			r = append(r, []byte(fmt.Sprintf("\r\n%s", data))...)
 			conn.Write(r)
 			file.Close()
-			sv.repls = append(sv.repls, conn)
+			sv.repls[conn.RemoteAddr().String()] = Replica{conn, 0}
 		case "WAIT":
-			conn.Write([]byte(fmt.Sprintf(":%d\r\n", len(sv.repls))))
+			sv.acks = 0
+			cmd := "*3\r\n$8\r\nreplconf\r\n$6\r\ngetack\r\n$1\r\n*\r\n"
+			for addr, repl := range sv.repls {
+				repl.conn.Write([]byte(cmd))
+				repl.offset += len(cmd)
+				sv.repls[addr] = repl
+			}
+			fmt.Println("ACK outside goroutine", sv.acks)
+			go func() {
+				waitRepl, _ := strconv.Atoi(string(resps[1].Data))
+				fmt.Println("WAIT TIME", waitRepl, sv.acks)
+				for {
+					if sv.acks >= waitRepl {
+						fmt.Println("ACKS PASSED", sv.acks)
+						conn.Write([]byte(fmt.Sprintf(":%d\r\n", sv.acks)))
+						break
+					}
+				}
+				fmt.Println("ACKS PASSED")
+			}()
 		default:
 			conn.Write([]byte("-ERR unknown command\r\n"))
 		}
@@ -595,8 +627,7 @@ func handShake() []byte {
 	}
 	for _, cmd := range handshakeCmds {
 		sv.masterConn.Write(cmd)
-		response := readVariableResponse(sv.masterConn)
-		fmt.Print(string(response))
+		readVariableResponse(sv.masterConn)
 	}
 	return readVariableResponse(sv.masterConn)
 
